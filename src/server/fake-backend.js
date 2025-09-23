@@ -14,9 +14,11 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Load unified data
-const dataPath = path.join(__dirname, '../data/unified-data.json');
+// Load seed data (VIN-keyed map) and geofences
+const dataPath = path.join(__dirname, '../data/seed.json');
+const geofencesPath = path.join(__dirname, '../data/geofences.json');
 let data;
+let geofences = [];
 try {
   const rawData = fs.readFileSync(dataPath, 'utf8');
   data = JSON.parse(rawData);
@@ -24,13 +26,137 @@ try {
   console.error('Error loading data:', error);
   process.exit(1);
 }
+try {
+  const gfRaw = fs.readFileSync(geofencesPath, 'utf8');
+  const parsed = JSON.parse(gfRaw);
+  geofences = Array.isArray(parsed)
+    ? parsed.map((g, i) => ({ id: g.id ?? String(i + 1), name: g.name || `Polygon ${i + 1}`, points: Array.isArray(g.points) ? g.points : [] }))
+    : [];
+} catch (error) {
+  console.warn('No geofences.json found or invalid JSON; starting with empty geofences.');
+  geofences = [];
+}
 
 // Helper functions
 const delay = (ms = 100) => new Promise(resolve => setTimeout(resolve, ms));
 
-const getVehiclesArray = () => Object.values(data.vehicles);
-const getAssetsArray = () => getVehiclesArray().map(v => ({ ...v.asset, rental: v.rental }));
-const getRentalsArray = () => getVehiclesArray().map(v => v.rental).filter(Boolean);
+// In seed.json, root is the vehicles map
+const getVehiclesArray = () => Object.values(data);
+
+// Compute 4-stage vehicle health status: "-", "정상", "관심필요", "조치필요"
+const MANAGEMENT_STAGE_VALUES = new Set([
+  "대여중",
+  "대여가능",
+  "예약중",
+  "입고 대상",
+  "수리/점검 중",
+  "수리/점검 완료",
+]);
+const MANAGEMENT_STAGE_DEFAULT = "대여가능";
+const LEGACY_STAGE_MAP = new Map([
+  ["대여 중", "대여중"],
+  ["대여 가능", "대여가능"],
+  ["입고대상", "입고 대상"],
+  ["입고 대상", "입고 대상"],
+  ["전산등록완료", "입고 대상"],
+  ["전산등록 완료", "입고 대상"],
+  ["단말 장착 완료", "대여가능"],
+  ["수리/점검 중", "수리/점검 중"],
+  ["수리/점검 완료", "수리/점검 완료"],
+]);
+
+const deriveManagementStage = (asset = {}) => {
+  if (!asset) return MANAGEMENT_STAGE_DEFAULT;
+  const current = asset.managementStage;
+  if (current) {
+    if (MANAGEMENT_STAGE_VALUES.has(current)) return current;
+    const legacy = LEGACY_STAGE_MAP.get(String(current).trim());
+    if (legacy) return legacy;
+  }
+
+  const vehicleStatus = (asset.vehicleStatus || '').trim();
+  const registrationStatus = (asset.registrationStatus || '').trim();
+  const deviceSerial = (asset.deviceSerial || '').trim();
+  const diagnosticCodes = asset.diagnosticCodes || {};
+  const totalIssues =
+    Number(diagnosticCodes.category1 || 0) +
+    Number(diagnosticCodes.category2 || 0) +
+    Number(diagnosticCodes.category3 || 0) +
+    Number(diagnosticCodes.category4 || 0);
+
+  if (vehicleStatus === '대여중' || vehicleStatus === '운행중' || vehicleStatus === '반납대기') {
+    return '대여중';
+  }
+  if (vehicleStatus === '예약중') {
+    return '예약중';
+  }
+  if (vehicleStatus === '정비중' || vehicleStatus === '수리중' || vehicleStatus === '점검중' || vehicleStatus === '도난추적') {
+    return '수리/점검 중';
+  }
+
+  if (totalIssues > 0) {
+    return '수리/점검 중';
+  }
+
+  if (!deviceSerial) {
+    return '입고 대상';
+  }
+
+  if (vehicleStatus === '대기중' || vehicleStatus === '유휴' || vehicleStatus === '대여가능' || vehicleStatus === '준비중') {
+    return '대여가능';
+  }
+
+  if (vehicleStatus === '수리완료' || vehicleStatus === '점검완료') {
+    return '수리/점검 완료';
+  }
+
+  if (registrationStatus === '장비부착 완료' || registrationStatus === '장비장착 완료' || registrationStatus === '보험등록 완료') {
+    return '대여가능';
+  }
+
+  return MANAGEMENT_STAGE_DEFAULT;
+};
+
+const computeDiagnosticStatus = (asset, rental) => {
+  try {
+    if (!asset || !asset.deviceSerial) return "-";
+    // Critical: stolen => 조치필요
+    if (rental && rental.reported_stolen) return "조치필요";
+    // Overdue rental => 관심필요
+    const now = new Date();
+    const end = rental?.rental_period?.end ? new Date(rental.rental_period.end) : null;
+    if (end && now > end) return "관심필요";
+    // Insurance expiring within 30 days => 관심필요
+    const exp = asset.insuranceExpiryDate ? new Date(asset.insuranceExpiryDate) : null;
+    if (exp && (exp - now) / (1000 * 60 * 60 * 24) <= 30) return "관심필요";
+    return "정상";
+  } catch {
+    return "-";
+  }
+};
+
+const getAssetsArray = () =>
+  getVehiclesArray().map((v) => {
+    const merged = { ...v.asset, rental: v.rental };
+    if (!merged.diagnosticStatus) {
+      merged.diagnosticStatus = computeDiagnosticStatus(merged, v.rental);
+    }
+    merged.managementStage = deriveManagementStage(merged);
+    return merged;
+  });
+const getRentalsArray = () => {
+  const allRentals = [];
+  getVehiclesArray().forEach(v => {
+    if (v.rental) {
+      if (Array.isArray(v.rental)) {
+        allRentals.push(...v.rental);
+      } else {
+        allRentals.push(v.rental);
+      }
+    }
+  });
+  return allRentals;
+};
 const getProblemVehicles = () => {
   const now = new Date();
   return getVehiclesArray().filter(v => {
@@ -75,8 +201,38 @@ app.post('/api/assets', async (req, res) => {
 
 app.put('/api/assets/:id', async (req, res) => {
   await delay();
-  // For demo purposes, just return updated data
-  const updatedAsset = { id: req.params.id, ...req.body };
+  const id = req.params.id;
+  const patch = req.body || {};
+  // Try to find and update the in-memory data so subsequent GETs reflect changes
+  let found = null;
+  for (const [vin, v] of Object.entries(data)) {
+    if (v && v.asset && v.asset.id === id) {
+      const prev = v.asset;
+      const merged = { ...prev, ...patch };
+      // Merge insuranceHistory arrays if both exist
+      if (Array.isArray(prev.insuranceHistory) || Array.isArray(patch.insuranceHistory)) {
+        const base = Array.isArray(prev.insuranceHistory) ? [...prev.insuranceHistory] : [];
+        const add = Array.isArray(patch.insuranceHistory) ? patch.insuranceHistory : [];
+        const key = (h) => [h.date || h.startDate || '', h.company || '', h.product || ''].join('#');
+        const seen = new Set(base.map(key));
+        const out = [...base];
+        for (const h of add) {
+          const k = key(h);
+          if (!seen.has(k)) {
+            out.push(h);
+            seen.add(k);
+          }
+        }
+        out.sort((a, b) => new Date(a.startDate || a.date || 0) - new Date(b.startDate || b.date || 0));
+        merged.insuranceHistory = out;
+      }
+      merged.managementStage = deriveManagementStage(merged);
+      data[vin].asset = merged;
+      found = merged;
+      break;
+    }
+  }
+  const updatedAsset = found || { id, ...patch };
   res.json(updatedAsset);
 });
 
@@ -138,23 +294,32 @@ app.post('/api/issue-drafts', async (req, res) => {
 // Geofences
 app.get('/api/geofences', async (req, res) => {
   await delay();
-  res.json(data.geofences);
+  res.json(geofences);
 });
 
 app.post('/api/geofences', async (req, res) => {
   await delay();
-  const newGeofence = { id: Date.now(), ...req.body };
-  res.status(201).json(newGeofence);
+  const payload = req.body || {};
+  const item = { id: String(Date.now()), name: payload.name || `Polygon ${geofences.length + 1}`, points: Array.isArray(payload.points) ? payload.points : [] };
+  geofences.push(item);
+  res.status(201).json(item);
 });
 
 app.put('/api/geofences/:id', async (req, res) => {
   await delay();
-  const updatedGeofence = { id: req.params.id, ...req.body };
-  res.json(updatedGeofence);
+  const id = String(req.params.id);
+  const idx = geofences.findIndex((g) => String(g.id) === id);
+  if (idx === -1) return res.status(404).json({ error: 'Geofence not found' });
+  const prev = geofences[idx];
+  const patch = req.body || {};
+  geofences[idx] = { ...prev, ...patch, id: prev.id };
+  res.json(geofences[idx]);
 });
 
 app.delete('/api/geofences/:id', async (req, res) => {
   await delay();
+  const id = String(req.params.id);
+  geofences = geofences.filter((g) => String(g.id) !== id);
   res.status(204).send();
 });
 
@@ -233,7 +398,7 @@ app.use('*', (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Fake backend server running on http://localhost:${PORT}`);
-  console.log(`📊 Loaded ${Object.keys(data.vehicles).length} vehicles and ${data.geofences.length} geofences`);
+  console.log(`📊 Loaded ${Object.keys(data).length} vehicles and ${geofences.length} geofences`);
 });
 
 export default app;

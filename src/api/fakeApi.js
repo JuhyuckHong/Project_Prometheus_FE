@@ -3,12 +3,79 @@
 // - Provides page-specific slices without changing existing pages yet
 
 import { loadCompanyInfo as _loadCompanyInfo, saveCompanyInfo as _saveCompanyInfo, defaultCompanyInfo as _defaultCompanyInfo } from "../data/company";
+import { MANAGEMENT_STAGE_OPTIONS } from "../constants/forms";
 
 const API_BASE_URL = import.meta.env.VITE_FAKE_API_BASE_URL || 'http://localhost:3001/api';
 
 const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
 const parseDate = (s) => (s ? new Date(s) : null);
 const now = () => new Date();
+
+const MANAGEMENT_STAGE_VALUES = new Set(MANAGEMENT_STAGE_OPTIONS.map((option) => option.value));
+const MANAGEMENT_STAGE_DEFAULT = "대여가능";
+const LEGACY_STAGE_MAP = new Map([
+  ["대여 중", "대여중"],
+  ["대여 가능", "대여가능"],
+  ["입고대상", "입고 대상"],
+  ["입고 대상", "입고 대상"],
+  ["전산등록완료", "입고 대상"],
+  ["전산등록 완료", "입고 대상"],
+  ["단말 장착 완료", "대여가능"],
+  ["수리/점검 중", "수리/점검 중"],
+  ["수리/점검 완료", "수리/점검 완료"],
+]);
+
+const deriveManagementStage = (asset = {}) => {
+  if (!asset) return MANAGEMENT_STAGE_DEFAULT;
+  const current = asset.managementStage;
+  if (current) {
+    if (MANAGEMENT_STAGE_VALUES.has(current)) return current;
+    const legacy = LEGACY_STAGE_MAP.get(current.trim());
+    if (legacy) return legacy;
+  }
+
+  const vehicleStatus = (asset.vehicleStatus || "").trim();
+  const registrationStatus = (asset.registrationStatus || "").trim();
+  const deviceSerial = (asset.deviceSerial || "").trim();
+  const diagnosticCodes = asset.diagnosticCodes || {};
+  const totalIssues =
+    Number(diagnosticCodes.category1 || 0) +
+    Number(diagnosticCodes.category2 || 0) +
+    Number(diagnosticCodes.category3 || 0) +
+    Number(diagnosticCodes.category4 || 0);
+
+  if (vehicleStatus === "대여중" || vehicleStatus === "운행중" || vehicleStatus === "반납대기") {
+    return "대여중";
+  }
+  if (vehicleStatus === "예약중") {
+    return "예약중";
+  }
+  if (vehicleStatus === "정비중" || vehicleStatus === "수리중" || vehicleStatus === "점검중" || vehicleStatus === "도난추적") {
+    return "수리/점검 중";
+  }
+
+  if (totalIssues > 0) {
+    return "수리/점검 중";
+  }
+
+  if (!deviceSerial) {
+    return "입고 대상";
+  }
+
+  if (vehicleStatus === "대기중" || vehicleStatus === "유휴" || vehicleStatus === "대여가능" || vehicleStatus === "준비중") {
+    return "대여가능";
+  }
+
+  if (vehicleStatus === "수리완료" || vehicleStatus === "점검완료") {
+    return "수리/점검 완료";
+  }
+
+  if (registrationStatus === "장비부착 완료" || registrationStatus === "장비장착 완료" || registrationStatus === "보험등록 완료") {
+    return "대여가능";
+  }
+
+  return MANAGEMENT_STAGE_DEFAULT;
+};
 
 // HTTP helper functions
 const fetchJSON = async (url, options = {}) => {
@@ -58,16 +125,155 @@ const deleteRequest = async (url) => {
 
 // Assets
 export async function fetchAssets() {
-  return await fetchJSON(`${API_BASE_URL}/assets`);
+  try {
+    const assets = await fetchJSON(`${API_BASE_URL}/assets`);
+    return normalizeAssets(assets);
+  } catch (error) {
+    // Fallback to local seed data if server is not available
+    console.warn('Falling back to local seed data for assets');
+    const { assets } = await import('../data/assets');
+    return normalizeAssets(assets);
+  }
+}
+
+// Attach/derive current insurance + device info from history when present
+function normalizeAssets(arr) {
+  if (!Array.isArray(arr)) return [];
+  const today = new Date();
+  return arr.map((asset) => {
+    const a = { ...asset };
+    a.managementStage = deriveManagementStage(a);
+    // --- Insurance normalization ---
+    let hist = Array.isArray(a.insuranceHistory) ? [...a.insuranceHistory] : [];
+    // If missing, synthesize a single entry from top-level fields
+    if (hist.length === 0 && (a.insuranceInfo || a.insuranceCompany || a.insuranceExpiryDate)) {
+      let start = a.insuranceStartDate || a.registrationDate || '';
+      const expiry = a.insuranceExpiryDate || '';
+      if (!start && expiry) {
+        try { const d = new Date(expiry); d.setFullYear(d.getFullYear() - 1); start = d.toISOString().slice(0,10); } catch {}
+      }
+      const company = a.insuranceCompany || a.insuranceInfo || '';
+      const product = a.insuranceProduct || '';
+      hist = [{
+        type: '등록',
+        date: start || a.registrationDate || '',
+        company,
+        product,
+        startDate: start || '',
+        expiryDate: expiry || '',
+        specialTerms: a.insuranceSpecialTerms || '',
+        docName: a.insuranceDocName || '',
+        docDataUrl: a.insuranceDocDataUrl || '',
+      }];
+    }
+    // Ensure sorted by effective date (start/date) ascending
+    hist.sort((x, y) => new Date(x.startDate || x.date || 0) - new Date(y.startDate || y.date || 0));
+
+    // Pick current entry: active by date range, else the latest by start/expiry
+    let current = null;
+    if (hist.length > 0) {
+      current =
+        hist.find((h) => {
+          const start = h.startDate ? new Date(h.startDate) : null;
+          const end = h.expiryDate ? new Date(h.expiryDate) : null;
+          if (start && today < start) return false;
+          if (end && today > end) return false;
+          return true;
+        }) || hist[hist.length - 1];
+    }
+
+    if (current) {
+      const company = current.company || a.insuranceCompany || a.insuranceInfo || "";
+      const product = current.product || a.insuranceProduct || "";
+      a.insuranceInfo = [company, product].filter(Boolean).join(" ").trim();
+      a.insuranceCompany = company;
+      a.insuranceProduct = product;
+      a.insuranceStartDate = current.startDate || a.insuranceStartDate || "";
+      a.insuranceExpiryDate = current.expiryDate || a.insuranceExpiryDate || "";
+      a.insuranceSpecialTerms = current.specialTerms || a.insuranceSpecialTerms || "";
+      a.insuranceDocName = current.docName || a.insuranceDocName || "";
+      a.insuranceDocDataUrl = current.docDataUrl || a.insuranceDocDataUrl || "";
+      a.insuranceHistory = hist;
+    }
+
+    // --- Device normalization ---
+    let dhist = Array.isArray(a.deviceHistory) ? [...a.deviceHistory] : [];
+    // If not provided, synthesize from top-level fields
+    if (dhist.length === 0 && (a.deviceInstallDate || a.deviceSerial || a.installer)) {
+      dhist = [
+        {
+          type: 'install',
+          date: a.deviceInstallDate || a.registrationDate || '',
+          installDate: a.deviceInstallDate || '',
+          serial: a.deviceSerial || '',
+          installer: a.installer || '',
+        }
+      ];
+    }
+    if (dhist.length > 0) {
+      dhist.sort((x, y) => new Date(x.installDate || x.date || 0) - new Date(y.installDate || y.date || 0));
+      const dcur = dhist[dhist.length - 1];
+      a.deviceInstallDate = dcur.installDate || dcur.date || a.deviceInstallDate || '';
+      a.deviceSerial = dcur.serial || a.deviceSerial || '';
+      a.installer = dcur.installer || a.installer || '';
+      a.deviceHistory = dhist;
+    }
+    return a;
+  });
 }
 
 export async function fetchAssetById(id) {
-  return await fetchJSON(`${API_BASE_URL}/assets/${id}`);
+  const a = await fetchJSON(`${API_BASE_URL}/assets/${id}`);
+  const [norm] = normalizeAssets([a]);
+  return norm || a;
+}
+
+export async function saveAsset(assetId, updatedFields) {
+  try {
+    // In a real API, this would be a PUT or PATCH request to the server
+    return await putJSON(`${API_BASE_URL}/assets/${assetId}`, updatedFields);
+  } catch (error) {
+    console.warn(`Falling back to local seed data for saveAsset for ${assetId}`, error);
+    const { db } = await import('../data/db');
+    const assetIndex = db.assets.findIndex(asset => asset.id === assetId);
+    if (assetIndex > -1) {
+      const prev = db.assets[assetIndex];
+      // Merge insurance history carefully
+      let merged = { ...prev, ...updatedFields };
+      if (Array.isArray(prev.insuranceHistory) || Array.isArray(updatedFields.insuranceHistory)) {
+        const hist = Array.isArray(prev.insuranceHistory) ? [...prev.insuranceHistory] : [];
+        const patchHist = Array.isArray(updatedFields.insuranceHistory) ? updatedFields.insuranceHistory : [];
+        // If patchHist looks like an append of last entry, de-dup by date+company+product
+        const key = (h) => [h.date || h.startDate || "", h.company || "", h.product || ""].join("#");
+        const seen = new Set(hist.map(key));
+        const appended = [...hist];
+        for (const h of patchHist) {
+          const k = key(h);
+          if (!seen.has(k)) {
+            appended.push(h);
+            seen.add(k);
+          }
+        }
+        appended.sort((x, y) => new Date(x.startDate || x.date || 0) - new Date(y.startDate || y.date || 0));
+        merged.insuranceHistory = appended;
+      }
+      db.assets[assetIndex] = merged;
+      return merged;
+    }
+    throw new Error(`Asset with ID ${assetId} not found for update.`);
+  }
 }
 
 // Rentals
 export async function fetchRentals() {
-  return await fetchJSON(`${API_BASE_URL}/rentals`);
+  try {
+    return await fetchJSON(`${API_BASE_URL}/rentals`);
+  } catch (error) {
+    // Fallback to local seed data if server is not available
+    console.warn('Falling back to local seed data for rentals');
+    const { rentals } = await import('../data/rentals');
+    return rentals;
+  }
 }
 
 export async function fetchRentalById(rentalId) {
@@ -192,7 +398,51 @@ export async function fetchLatestRentals() {
 
 // Dashboard slices: asset registration status distribution + business status counts
 export async function fetchDashboardData() {
-  return await fetchJSON(`${API_BASE_URL}/dashboard`);
+  try {
+    return await fetchJSON(`${API_BASE_URL}/dashboard`);
+  } catch (error) {
+    // Fallback to local seed data if server is not available
+    console.warn('Falling back to local seed data for dashboard');
+    const { db } = await import('../data/db');
+
+    // Calculate asset registration status distribution
+    const registrationStats = {};
+    db.assets.forEach(asset => {
+      const status = asset.registrationStatus || '미등록';
+      registrationStats[status] = (registrationStats[status] || 0) + 1;
+    });
+
+    // Calculate business status counts
+    const businessStats = {};
+    db.assets.forEach(asset => {
+      const status = asset.vehicleStatus || '준비중';
+      businessStats[status] = (businessStats[status] || 0) + 1;
+    });
+
+    // Total counts
+    const totalVehicles = db.assets.length;
+    const activeRentals = db.rentals.length;
+
+    // Convert to array format
+    const vehicleStatusArray = Object.keys(registrationStats).map(name => ({
+      name,
+      value: registrationStats[name]
+    }));
+
+    // Convert to array format
+    const bizStatusArray = Object.keys(businessStats).map(name => ({
+      name,
+      value: businessStats[name]
+    }));
+
+    return {
+      vehicleStatus: vehicleStatusArray, // Changed from registrationStats
+      bizStatus: bizStatusArray,         // Changed from businessStats
+      totalVehicles,
+      activeRentals,
+      timestamp: new Date().toISOString()
+    };
+  }
 }
 
 // Simplified vehicle view (most pages don't need this complex logic)

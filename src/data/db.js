@@ -1,8 +1,10 @@
 // Unified dummy database: centralizes vehicles, assets, rentals, and geofences
 // Now vehicles is the single source of truth; assets/rentals are derived.
 
-import { seedVehicles } from "./seed";
-import { dummyGeofences as seedGeofences } from "./geofences";
+import seed from "./seed.json";
+// seed.json is a VIN-keyed map: { [vin]: { vin, asset, rental } }
+const seedVehicles = seed || {};
+import geofences from "./geofences.json";
 
 // Derive assets and rentals from vehicles
 const assetsFromVehicles = Object.values(seedVehicles)
@@ -10,14 +12,15 @@ const assetsFromVehicles = Object.values(seedVehicles)
   .filter(Boolean);
 const rentalsFromVehicles = Object.values(seedVehicles)
   .map((v) => v && v.rental)
-  .filter(Boolean);
+  .filter(Boolean)
+  .flat();
 
 // Expose a single in-memory DB object
 export const db = {
   vehicles: seedVehicles,
   assets: assetsFromVehicles,
   rentals: rentalsFromVehicles,
-  geofences: seedGeofences,
+  geofences,
 };
 
 // Helpers for consumers who want quick lookups

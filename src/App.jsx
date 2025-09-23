@@ -3,14 +3,13 @@ import { HashRouter as Router, Routes, Route, Navigate } from "react-router-dom"
 import "./App.css";
 import Login from "./pages/Login";
 import SignUp from "./pages/SignUp";
+import TermsAgreement from "./pages/TermsAgreement";
 import FindId from "./pages/FindId";
 import ForgotPassword from "./pages/ForgotPassword";
 import Settings from "./pages/Settings";
 import AssetStatus from "./pages/AssetStatus";
 import Dashboard from "./pages/Dashboard";
 import RentalContracts from "./pages/RentalContracts";
-import RentalsMapPage from "./pages/RentalsMapPage";
-import ProblemVehicles from "./pages/ProblemVehicles";
 import Detail from "./pages/Detail";
 import AppLayout from "./components/AppLayout";
 import RequireAuth from "./components/RequireAuth";
@@ -22,6 +21,7 @@ function App() {
       <Router>
         <Routes>
           <Route path="/" element={<Login />} />
+          <Route path="/terms" element={<TermsAgreement />} />
           <Route path="/signup" element={<SignUp />} />
           <Route path="/find-id" element={<FindId />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -45,16 +45,6 @@ function App() {
             <Route path="/rentals/table" element={
               <ErrorBoundary>
                 <RentalContracts />
-              </ErrorBoundary>
-            } />
-            <Route path="/rentals/map" element={
-              <ErrorBoundary>
-                <RentalsMapPage />
-              </ErrorBoundary>
-            } />
-            <Route path="/issue" element={
-              <ErrorBoundary>
-                <ProblemVehicles />
               </ErrorBoundary>
             } />
             <Route path="/detail/:type/:id" element={

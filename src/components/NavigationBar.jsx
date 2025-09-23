@@ -1,100 +1,41 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { FiHome, FiFileText, FiAlertTriangle, FiSettings, FiLogOut, FiMap } from "react-icons/fi";
+import { FiHome, FiFileText, FiInfo } from "react-icons/fi";
 import { FaCar } from "react-icons/fa";
 import { typedStorage } from "../utils/storage";
-import { fetchCompanyInfo } from "../api";
-import defaultLogo from "../assets/default-logo.svg";
 
 export default function NavigationBar() {
     const navigate = useNavigate();
-    const [companyInfo, setCompanyInfo] = useState(null);
-
-    useEffect(() => {
-        const loadCompanyInfo = async () => {
-            try {
-                const info = await fetchCompanyInfo();
-                setCompanyInfo(info);
-            } catch (error) {
-                console.error('Failed to load company info:', error);
-            }
-        };
-        loadCompanyInfo();
-    }, []);
-
-    function handleLogout() {
-        typedStorage.auth.logout();
-        navigate("/", { replace: true });
-    }
 
     return (
         <nav className="navigation-bar" role="navigation" aria-label="Main Navigation">
-            {/* Service name and company info */}
-            <div className="navigation-bar__branding">
-                <div className="navigation-bar__service-name">Findrive</div>
-                <div className="navigation-bar__company">
-                    <img 
-                        src={companyInfo?.logoDataUrl || defaultLogo} 
-                        alt="Company Logo" 
-                        className="navigation-bar__company-logo"
-                        onError={(e) => {
-                            e.target.src = defaultLogo;
-                        }}
-                    />
-                    <span className="navigation-bar__company-name">
-                        {companyInfo?.corpName || "회사명"}
-                    </span>
-                </div>
-            </div>
-
-            <NavLink to="/dashboard" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Dashboard" title="Dashboard">
+            <NavLink to="/dashboard" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Home" title="Home">
                 <FiHome className="navigation-bar__icon" aria-hidden />
                 <span className="navigation-bar__label" role="tooltip">
-                    Dashboard
+                    홈
                 </span>
             </NavLink>
 
-            <NavLink to="/assets" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Assets" title="Assets">
+            <NavLink to="/assets" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="자산" title="자산">
                 <FaCar className="navigation-bar__icon" aria-hidden />
                 <span className="navigation-bar__label" role="tooltip">
-                    Assets
+                    자산
                 </span>
             </NavLink>
 
-            <NavLink to="/rentals/table" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Contracts" title="Contracts">
+            <NavLink to="/rentals/table" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="계약" title="계약">
                 <FiFileText className="navigation-bar__icon" aria-hidden />
                 <span className="navigation-bar__label" role="tooltip">
-                    Contracts
+                    계약
                 </span>
             </NavLink>
 
-            <NavLink to="/issue" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Issues" title="Issues">
-                <FiAlertTriangle className="navigation-bar__icon" aria-hidden />
+            <NavLink to="/settings" className={({ isActive }) => `navigation-bar__link navigation-bar__info ${isActive ? "is-active" : ""}`} aria-label="정보" title="정보">
+                <FiInfo className="navigation-bar__icon" aria-hidden />
                 <span className="navigation-bar__label" role="tooltip">
-                    Issues
+                    정보
                 </span>
             </NavLink>
-
-            <NavLink to="/rentals/map" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Map" title="Map">
-                <FiMap className="navigation-bar__icon" aria-hidden />
-                <span className="navigation-bar__label" role="tooltip">
-                    Map
-                </span>
-            </NavLink>
-
-            <NavLink to="/settings" className={({ isActive }) => `navigation-bar__link ${isActive ? "is-active" : ""}`} aria-label="Settings" title="Settings">
-                <FiSettings className="navigation-bar__icon" aria-hidden />
-                <span className="navigation-bar__label" role="tooltip">
-                    Settings
-                </span>
-            </NavLink>
-
-            <button type="button" className="navigation-bar__link navigation-bar__logout" aria-label="Logout" title="Logout" onClick={handleLogout}>
-                <FiLogOut className="navigation-bar__icon" aria-hidden />
-                <span className="navigation-bar__label" role="tooltip">
-                    Logout
-                </span>
-            </button>
         </nav>
     );
 }

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
+import KakaoMap from "../components/KakaoMap";
 import GeofenceGlobalForm from "../components/forms/GeofenceGlobalForm";
-import GeofencePreview from "../components/GeofencePreview";
 import { fetchCompanyInfo as loadCompanyInfo, saveCompanyInfo, defaultCompanyInfo } from "../api";
 import { COLORS, DIMENSIONS } from "../constants";
-import { FileBadge, CountBadge, GeofenceBadge } from "../components/StatusBadge";
+import { CountBadge, GeofenceBadge } from "../components/StatusBadge";
 
 export default function Settings() {
     const [viewData, setViewData] = useState({ ...defaultCompanyInfo });
@@ -12,16 +12,16 @@ export default function Settings() {
     const [saved, setSaved] = useState(false);
 
     // Geofence edit state
-    const [geofenceDraft, setGeofenceDraft] = useState({ geofences: [] });
     const [geofenceList, setGeofenceList] = useState([]);
-    const [editingIdx, setEditingIdx] = useState(null);
-    const [editingName, setEditingName] = useState("");
+    const [newGeofenceDraft, setNewGeofenceDraft] = useState({ geofences: [] });
+    const [newGeofenceName, setNewGeofenceName] = useState("");
 
     // Load company info and migrate legacy geofences
     useEffect(() => {
         let mounted = true;
         (async () => {
             let base = await loadCompanyInfo();
+
             try {
                 const raw = localStorage.getItem("geofenceSets");
                 if (raw) {
@@ -46,10 +46,30 @@ export default function Settings() {
             } catch (e) {
                 console.error("Failed to load or migrate company info", e);
             }
+
             if (mounted) {
                 setViewData(base);
                 setEditData(base);
-                setGeofenceList(Array.isArray(base?.geofences) ? base.geofences : []);
+                let geofences = Array.isArray(base?.geofences) ? base.geofences : [];
+
+                // 지오펜스가 없으면 기본 데이터 로드
+                if (geofences.length === 0) {
+                    try {
+                        const { dummyGeofences } = await import("../data/geofences");
+                        geofences = Array.isArray(dummyGeofences) ? dummyGeofences : [];
+
+                        if (geofences.length > 0) {
+                            const updatedBase = { ...base, geofences: geofences };
+                            await saveCompanyInfo(updatedBase);
+                            setViewData(updatedBase);
+                            setEditData(updatedBase);
+                        }
+                    } catch (error) {
+                        console.error("Failed to load default geofences:", error);
+                    }
+                }
+
+                setGeofenceList(geofences);
             }
         })();
         return () => {
@@ -110,59 +130,6 @@ export default function Settings() {
         setEditData(next);
     };
 
-    const handleGeofenceSubmit = async (data) => {
-        try {
-            let newList;
-            if (editingIdx !== null) {
-                const list = toItems(geofenceList || []);
-                const incoming = Array.isArray(data?.geofences) && data.geofences[0] ? data.geofences[0] : null;
-                if (list[editingIdx] && incoming) {
-                    list[editingIdx] = { name: editingName || list[editingIdx].name, points: incoming };
-                }
-                newList = list;
-                setEditingIdx(null);
-                setEditingName("");
-            } else {
-                const polys = Array.isArray(data?.geofences) ? data.geofences : [];
-                if (polys.length === 1) {
-                    const nm = (data?.name && data.name.trim()) || `Polygon 1`;
-                    newList = [{ name: nm, points: polys[0] }];
-                } else {
-                    newList = polys.map((pts, i) => ({ name: `Polygon ${i + 1}`, points: pts }));
-                }
-                setEditingName("");
-            }
-            setGeofenceList(newList);
-            await saveGeofencesIntoCompany(newList);
-            setGeofenceDraft({ geofences: [] });
-        } catch (e) {
-            console.error("Error submitting geofence:", e);
-        }
-    };
-
-    const handleGeofenceDelete = async () => {
-        const items = [];
-        setGeofenceList(items);
-        await saveGeofencesIntoCompany(items);
-    };
-
-    const handleGeofenceEditAll = () => {
-        const set = geofenceList || [];
-        const points = toItems(set).map((it) => it.points);
-        setGeofenceDraft({ geofences: points });
-        setEditingIdx(null);
-        setEditingName("");
-    };
-
-    const handleGeofenceEditOne = (idx) => {
-        const items = toItems(geofenceList || []);
-        const it = items[idx];
-        if (!it) return;
-        setEditingIdx(idx);
-        setEditingName(it.name || "");
-        setGeofenceDraft({ geofences: [it.points] });
-    };
-
     const handleGeofenceDeleteOne = async (idx) => {
         const next = (geofenceList || []).filter((_, i) => i !== idx);
         setGeofenceList(next);
@@ -177,205 +144,198 @@ export default function Settings() {
         await saveGeofencesIntoCompany(list);
     };
 
-    // useCallback으로 함수를 메모이제이션하여 불필요한 리렌더링을 방지합니다.
-    const handleGeofenceDraftChange = useCallback((v) => {
-        setGeofenceDraft(v);
+    const handleNewGeofenceSubmit = async (data) => {
+        try {
+            const polys = Array.isArray(data?.geofences) ? data.geofences : [];
+            if (polys.length === 0) {
+                return;
+            }
+
+            let newList = [...geofenceList];
+
+            if (polys.length === 1) {
+                const name = (data?.name && data.name.trim()) || newGeofenceName.trim() || `Polygon ${newList.length + 1}`;
+                newList.push({ name, points: polys[0] });
+            } else {
+                polys.forEach((pts, i) => {
+                    newList.push({ name: `Polygon ${newList.length + i + 1}`, points: pts });
+                });
+            }
+
+            setGeofenceList(newList);
+            await saveGeofencesIntoCompany(newList);
+
+            // Reset form
+            setNewGeofenceDraft({ geofences: [] });
+            setNewGeofenceName("");
+        } catch (e) {
+            console.error("Error adding new geofence:", e);
+        }
+    };
+
+    const handleNewGeofenceDraftChange = useCallback((v) => {
+        setNewGeofenceDraft(v);
     }, []);
+
+    const smallButtonStyle = {
+        padding: "4px 8px",
+        fontSize: "12px",
+        minWidth: "auto",
+        border: "none",
+        borderRadius: "4px",
+        cursor: "pointer",
+    };
+
+    const saveButtonStyle = {
+        ...smallButtonStyle,
+        backgroundColor: "#e9f8ee",
+        color: "#177245",
+    };
+
+    const deleteButtonStyle = {
+        ...smallButtonStyle,
+        backgroundColor: "#fdecef",
+        color: "#c62828",
+    };
 
     return (
         <div className="page">
             <h1>회사정보설정</h1>
             <div className="page-scroll">
-                {!editing ? (
-                    <div className="card" style={{ maxWidth: 720 }}>
-                        <div className="header-row" style={{ marginBottom: 10 }}>
-                            <div>
-                                <strong>회사 정보</strong>
+                {/* 세로 배치 컨테이너 (반응형 컬럼 제거) */}
+                <div
+                    style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 16,
+                        alignItems: "stretch",
+                    }}
+                >
+                    {/* 회사 정보 섹션 */}
+                    <div>
+                        <div className="card">
+                            <div className="header-row" style={{ marginBottom: 10 }}>
+                                <div>
+                                    <h2>회사 정보</h2>
+                                </div>
                             </div>
-                            <div>
-                                {saved ? <span className="saved-indicator">저장됨</span> : null}
-                                <button className="form-button" onClick={startEdit}>
-                                    편집
-                                </button>
+
+                            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    <span className="form-label">대표자명</span>
+                                    <span>{viewData.ceoName || <span className="empty">-</span>}</span>
+                                </div>
+                                <span style={{ color: "#bbb" }}>|</span>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    <span className="form-label">사업자등록번호</span>
+                                    <span>{viewData.regNumber || <span className="empty">-</span>}</span>
+                                </div>
                             </div>
                         </div>
+                    </div>
 
-                        <div className="form-grid">
-                            <label className="form-label">법인명</label>
-                            <div>{viewData.corpName || <span className="empty">-</span>}</div>
-
-                            <label className="form-label">대표자명</label>
-                            <div>{viewData.ceoName || <span className="empty">-</span>}</div>
-
-                            <label className="form-label">사업자번호</label>
-                            <div>{viewData.regNumber || <span className="empty">-</span>}</div>
-
-                            <label className="form-label">법인설립일</label>
-                            <div>{viewData.incorpDate || <span className="empty">-</span>}</div>
-
-                            <label className="form-label">법인주소</label>
-                            <div>{viewData.address || <span className="empty">-</span>}</div>
-
-                            <label className="form-label">회사 로고</label>
-                            <div>
-                                {viewData.logoDataUrl ? (
-                                    <img src={viewData.logoDataUrl} alt="회사 로고" style={{ height: 64, width: 64, objectFit: "contain", border: "1px solid #eee", borderRadius: 8 }} />
-                                ) : (
-                                    <span className="empty">업로드된 로고 없음</span>
-                                )}
-                            </div>
-
-                            <label className="form-label">사업자등록증</label>
-                            <div>
-                                {viewData.certDataUrl ? (
-                                    String(viewData.certDataUrl).startsWith("data:application/pdf") ? (
-                                        <FileBadge>PDF 업로드됨</FileBadge>
+                    {/* 지오펜스 설정 섹션 */}
+                    <div>
+                        <div className="card">
+                            <div className="header-row" style={{ marginBottom: 10 }}>
+                                <div>
+                                    <h2>지오펜스 관리</h2>
+                                </div>
+                                <div>
+                                    {Array.isArray(viewData?.geofences) && viewData.geofences.length > 0 ? (
+                                        <CountBadge count={viewData.geofences.length} label="개 저장됨" />
                                     ) : (
-                                        <img src={viewData.certDataUrl} alt="사업자등록증" style={{ maxWidth: 280, maxHeight: 180, objectFit: "contain", border: "1px solid #eee", borderRadius: 8 }} />
-                                    )
-                                ) : (
-                                    <span className="empty">업로드된 파일 없음</span>
-                                )}
+                                        <span className="empty">지오펜스 없음</span>
+                                    )}
+                                </div>
                             </div>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="card" style={{ maxWidth: 720 }}>
-                        <div className="header-row" style={{ marginBottom: 10 }}>
+
+                            <div style={{ marginBottom: 16 }}>
+                                <h3 style={{ margin: "0 0 8px", fontSize: "14px", fontWeight: "600" }}>신규 지오펜스 추가</h3>
+                                <GeofenceGlobalForm
+                                    initial={newGeofenceDraft}
+                                    initialName={newGeofenceName}
+                                    onSubmit={handleNewGeofenceSubmit}
+                                    onChange={handleNewGeofenceDraftChange}
+                                    onNameChange={(v) => setNewGeofenceName(v)}
+                                />
+                            </div>
+
                             <div>
-                                <strong>회사 정보 편집</strong>
-                            </div>
-                        </div>
-                        <div className="form-grid">
-                            <label htmlFor="corpName" className="form-label">
-                                법인명
-                            </label>
-                            <input id="corpName" className="form-input" type="text" value={editData.corpName} onChange={(e) => onChange("corpName", e.target.value)} />
+                                <h2>Geofence 목록</h2>
+                                {(() => {
+                                    const displayItems = toItems(geofenceList).filter((it) => Array.isArray(it.points) && it.points.length > 0);
+                                    if (!displayItems || displayItems.length === 0) return <div className="empty">No geofences</div>;
+                                    return (
+                                        <>
+                                            <div
+                                                style={{
+                                                    display: "grid",
+                                                    gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))",
+                                                    gap: 12,
+                                                }}
+                                            >
+                                                {displayItems.map((item, idx) => (
+                                                    <div key={idx}>
+                                                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                                                            <GeofenceBadge index={idx} />
+                                                            <input
+                                                                className="form-input"
+                                                                value={item.name || ""}
+                                                                onChange={(e) => handleRenameOne(idx, e.target.value)}
+                                                                style={{ flex: 1, minWidth: "80px" }}
+                                                            />
+                                                            <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                                                                <button
+                                                                    className="form-button"
+                                                                    type="button"
+                                                                    onClick={(e) => {
+                                                                        saveGeofencesIntoCompany(geofenceList);
+                                                                        const button = e.currentTarget;
+                                                                        button.textContent = "저장됨!";
+                                                                        button.style.background = "#4CAF50";
+                                                                        button.style.color = "white";
 
-                            <label htmlFor="ceoName" className="form-label">
-                                대표자명
-                            </label>
-                            <input id="ceoName" className="form-input" type="text" value={editData.ceoName} onChange={(e) => onChange("ceoName", e.target.value)} />
+                                                                        setTimeout(() => {
+                                                                            button.textContent = "저장";
+                                                                            button.style.background = saveButtonStyle.backgroundColor;
+                                                                            button.style.color = saveButtonStyle.color;
+                                                                        }, 1000);
+                                                                    }}
+                                                                    style={saveButtonStyle}
+                                                                >
+                                                                    저장
+                                                                </button>
+                                                                <button className="form-button" type="button" onClick={() => handleGeofenceDeleteOne(idx)} style={deleteButtonStyle}>
+                                                                    삭제
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        <KakaoMap
+                                                            polygons={[item.points]}
+                                                            height="300px"
+                                                            editable={true}
+                                                            onPolygonChange={(newPoints) => {
+                                                                // 상태만 업데이트 (자동 저장은 디바운스 적용)
+                                                                const updatedList = [...geofenceList];
+                                                                updatedList[idx] = { ...updatedList[idx], points: newPoints };
+                                                                setGeofenceList(updatedList);
 
-                            <label htmlFor="regNumber" className="form-label">
-                                사업자번호
-                            </label>
-                            <input id="regNumber" className="form-input" type="text" placeholder="000-00-00000" value={editData.regNumber} onChange={(e) => onChange("regNumber", e.target.value)} />
-
-                            <label htmlFor="incorpDate" className="form-label">
-                                법인설립일
-                            </label>
-                            <input id="incorpDate" className="form-input" type="date" value={editData.incorpDate} onChange={(e) => onChange("incorpDate", e.target.value)} />
-
-                            <label htmlFor="address" className="form-label">
-                                법인주소
-                            </label>
-                            <input id="address" className="form-input" type="text" value={editData.address} onChange={(e) => onChange("address", e.target.value)} />
-
-                            <label htmlFor="logoUpload" className="form-label">
-                                회사 로고 업로드
-                            </label>
-                            <div>
-                                <input id="logoUpload" type="file" accept="image/*" capture="environment" onChange={(e) => onFileChange("logoDataUrl", e.target.files?.[0])} />
-                                {editData.logoDataUrl ? (
-                                    <div style={{ marginTop: 8 }}>
-                                        <img src={editData.logoDataUrl} alt="로고 미리보기" style={{ height: 64, width: 64, objectFit: "contain", border: "1px solid #eee", borderRadius: 8 }} />
-                                    </div>
-                                ) : null}
-                            </div>
-
-                            <label htmlFor="certUpload" className="form-label">
-                                사업자등록증 업로드
-                            </label>
-                            <div>
-                                <input id="certUpload" type="file" accept="image/*,.pdf" capture="environment" onChange={(e) => onFileChange("certDataUrl", e.target.files?.[0])} />
-                                {editData.certDataUrl ? (
-                                    <div style={{ marginTop: 8 }}>
-                                        {String(editData.certDataUrl).startsWith("data:application/pdf") ? (
-                                            <FileBadge>PDF 선택됨</FileBadge>
-                                        ) : (
-                                            <img
-                                                src={editData.certDataUrl}
-                                                alt="사업자등록증 미리보기"
-                                                style={{ maxWidth: 280, maxHeight: 180, objectFit: "contain", border: "1px solid #eee", borderRadius: 8 }}
-                                            />
-                                        )}
-                                    </div>
-                                ) : null}
-                            </div>
-
-                            <div className="form-actions" style={{ display: "flex", gap: 8 }}>
-                                <button type="button" className="form-button" onClick={saveCompany}>
-                                    저장
-                                </button>
-                                <button type="button" className="toggle-btn" onClick={cancelEdit}>
-                                    취소
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                <div className="card" style={{ maxWidth: 960, marginTop: 16 }}>
-                    <div className="header-row" style={{ marginBottom: 10 }}>
-                        <div>
-                            <strong>지오펜스 설정</strong>
-                        </div>
-                        <div>
-                            {Array.isArray(viewData?.geofences) && viewData.geofences.length > 0 ? (
-                                <CountBadge count={viewData.geofences.length} label="개 저장됨" />
-                            ) : (
-                                <span className="empty">지오펜스 없음</span>
-                            )}
-                        </div>
-                    </div>
-
-                    <GeofenceGlobalForm
-                        initial={geofenceDraft}
-                        initialName={editingIdx !== null ? editingName : ""}
-                        onSubmit={handleGeofenceSubmit}
-                        onChange={handleGeofenceDraftChange}
-                        onNameChange={(v) => setEditingName(v)}
-                    />
-
-                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                        <button className="form-button" type="button" onClick={handleGeofenceEditAll} disabled={(toItems(geofenceList).length || 0) === 0}>
-                            전체 수정
-                        </button>
-                        <button className="form-button" type="button" onClick={handleGeofenceDelete} style={{ background: "#c62828" }}>
-                            전체 삭제
-                        </button>
-                    </div>
-
-                    <div style={{ marginTop: 16 }}>
-                        <h2 style={{ margin: "0 0 8px" }}>Geofence 목록</h2>
-                        {(() => {
-                            const displayItems = toItems(geofenceList).filter((it) => Array.isArray(it.points) && it.points.length > 0);
-                            if (!displayItems || displayItems.length === 0) return <div className="empty">No geofences</div>;
-                            return (
-                                <>
-                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
-                                        {displayItems.map((item, idx) => (
-                                            <div key={idx}>
-                                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                                                    <GeofenceBadge index={idx} />
-                                                    <input className="form-input" value={item.name || ""} onChange={(e) => handleRenameOne(idx, e.target.value)} style={{ flex: 1 }} />
-                                                </div>
-                                                <GeofencePreview polygons={[item.points]} height={200} />
-                                                <div className="form-actions" style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                                                    <button className="form-button" type="button" onClick={() => handleGeofenceEditOne(idx)}>
-                                                        Edit
-                                                    </button>
-                                                    <button className="form-button" type="button" onClick={() => handleGeofenceDeleteOne(idx)} style={{ background: "#c62828" }}>
-                                                        Delete
-                                                    </button>
-                                                </div>
+                                                                // 디바운스된 자동 저장
+                                                                clearTimeout(window.autoSaveTimeout);
+                                                                window.autoSaveTimeout = setTimeout(() => {
+                                                                    saveGeofencesIntoCompany(updatedList);
+                                                                }, 1000);
+                                                            }}
+                                                        />
+                                                    </div>
+                                                ))}
                                             </div>
-                                        ))}
-                                    </div>
-                                </>
-                            );
-                        })()}
+                                        </>
+                                    );
+                                })()}
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
